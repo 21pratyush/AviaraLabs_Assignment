@@ -16,6 +16,7 @@ class Document(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(500), nullable=False)
     content_type: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow
