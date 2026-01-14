@@ -7,7 +7,9 @@ from app.db import models
 from app.db.vector_db import init_collection
 
 from app.api.ingest import router as ingest_router
-from app.api.retrieval import router as retrieval_router  
+from app.api.retrieval import router as retrieval_router
+from app.api.admin import router as admin_router
+from app.api.audit import router as audit_router
 
 app = FastAPI(
     title="Contract Intelligence API",
@@ -25,4 +27,6 @@ def health_check():
     return {"status": "ok"}
 
 app.include_router(ingest_router)
-app.include_router(retrieval_router) 
+app.include_router(retrieval_router) app.include_router(retrieval_router)
+app.include_router(admin_router)
+app.include_router(audit_router)

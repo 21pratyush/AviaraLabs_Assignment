@@ -9,3 +9,4 @@ langchain
 langchain-google-genai
 sentence-transformers
 qdrant-client
+requests

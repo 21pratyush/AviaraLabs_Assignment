@@ -77,3 +77,21 @@ class AuditFinding(Base):
     )
 
     document = relationship("Document", back_populates="audits")
+
+
+class WebhookJob(Base):
+    __tablename__ = "webhook_jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    callback_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    last_response: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
+    )
