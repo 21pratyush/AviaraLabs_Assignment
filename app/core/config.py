@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./contracts.db")
 
 UPLOAD_DIR = os.path.abspath(os.getenv("UPLOAD_DIR", "./data/uploads"))

@@ -4,3 +4,8 @@ python-dotenv
 sqlalchemy>=2.0
 psycopg2-binary
 python-multipart
+docling
+langchain
+langchain-google-genai
+sentence-transformers
+qdrant-client

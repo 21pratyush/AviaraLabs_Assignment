@@ -1,8 +1,8 @@
 import os
 import uuid
 from sqlalchemy.orm import Session
-from typing import List
-from app.db.models import Document
+from typing import List,Dict
+from app.db.models import Document, Extraction, DocumentChunk
 from app.core.config import UPLOAD_DIR
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -40,3 +40,75 @@ def ingest_documents(db: Session, files: list) -> List[int]:
 
     db.commit()
     return document_ids
+
+def save_document_chunks(
+    db: Session,
+    document_id: int,
+    chunks_data: List[Dict]
+) -> List[int]:
+    """
+    Save document chunks with vector IDs to the database -> Table: DocumentChunk
+    
+    Args:
+        db: Database session
+        document_id: ID of the document
+        chunks_data: List of dicts with 'text' and 'vector_id' keys
+        
+    Returns:
+        List of created chunk IDs
+    """
+    chunk_ids = []
+    
+    try:
+        for idx, chunk_data in enumerate(chunks_data):
+            chunk = DocumentChunk(
+                document_id=document_id,
+                chunk_text=chunk_data["text"],
+                page_number=0,  # Default value since we don't have page info
+                vector_id=str(chunk_data["vector_id"])
+            )
+            db.add(chunk)
+        
+        # Commit all at once
+        db.commit()
+        
+        # Collect the IDs of newly added chunks
+        new_chunks = db.query(DocumentChunk).filter(
+            DocumentChunk.document_id == document_id
+        ).order_by(DocumentChunk.id.desc()).limit(len(chunks_data)).all()
+        
+        chunk_ids = [chunk.id for chunk in reversed(new_chunks)]
+        
+    except Exception as e:
+        db.rollback()
+        raise Exception(f"Failed to save chunks: {str(e)}")
+    
+    return chunk_ids
+
+def save_extraction_result(
+    db: Session,
+    document_id: int,
+    extracted_json: Dict,
+    model_used: str = "gemini-2.5-flash"
+) -> Extraction:
+    """
+    Save extracted contract data to the database -> Table: Extraction
+    
+    Args:
+        db: Database session
+        document_id: ID of the document
+        extracted_json: Extracted contract data as JSON
+        model_used: Name of the model used for extraction
+        
+    Returns:
+        Extraction: The created extraction record
+    """
+    extraction = Extraction(
+        document_id=document_id,
+        extracted_json=extracted_json,
+        model_used=model_used
+    )
+    db.add(extraction)
+    db.commit()
+    db.refresh(extraction)
+    return extraction

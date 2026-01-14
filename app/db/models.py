@@ -36,8 +36,8 @@ class DocumentChunk(Base):
     )
 
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
-    page_number: Mapped[int] = mapped_column(Integer)
-    vector_id: Mapped[str] = mapped_column(String(255))  # Qdrant reference
+    page_number: Mapped[int] = mapped_column(Integer, nullable=True)
+    vector_id: Mapped[str] = mapped_column(String(255), nullable=False) 
 
     document = relationship("Document", back_populates="chunks")
 
