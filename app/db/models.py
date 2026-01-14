@@ -37,6 +37,8 @@ class DocumentChunk(Base):
 
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     page_number: Mapped[int] = mapped_column(Integer, nullable=True)
+    char_start: Mapped[int] = mapped_column(Integer, nullable=True)
+    char_end: Mapped[int] = mapped_column(Integer, nullable=True)
     vector_id: Mapped[str] = mapped_column(String(255), nullable=False) 
 
     document = relationship("Document", back_populates="chunks")
@@ -70,7 +72,7 @@ class AuditFinding(Base):
     clause_type: Mapped[str] = mapped_column(String(100))
     severity: Mapped[str] = mapped_column(String(20))  # low/medium/high
     description: Mapped[str] = mapped_column(Text)
-    evidence: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[dict] = mapped_column(JSON)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow

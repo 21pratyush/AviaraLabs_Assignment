@@ -10,3 +10,4 @@ langchain-google-genai
 sentence-transformers
 qdrant-client
 requests
+PyPDF2

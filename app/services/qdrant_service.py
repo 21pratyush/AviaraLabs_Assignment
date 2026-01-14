@@ -35,6 +35,9 @@ def store_embeddings(
                     "document_id": document_id,
                     "chunk_index": chunk_data["chunk_index"],
                     "text": chunk_data["text"],
+                    "page_number": chunk_data.get("page_number"),
+                    "char_start": chunk_data.get("char_start"),
+                    "char_end": chunk_data.get("char_end"),
                 }
             )
             points.append(point)

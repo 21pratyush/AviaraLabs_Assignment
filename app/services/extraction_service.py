@@ -181,8 +181,14 @@ def process_document_embeddings(
             extracted_text = data["extracted_text"]
             filename = data["filename"]
             
-            # Create embeddings
-            embeddings_data = create_embeddings(extracted_text)
+            # Create embeddings (page-aware) using the stored file path
+            # Use the document file path from DB to preserve page info
+            doc_record = db.query(Document).filter(Document.id == document_id).first()
+            if not doc_record or not doc_record.file_path:
+                results[document_id] = {"error": "Missing file for embeddings", "vector_ids": None}
+                continue
+
+            embeddings_data = create_embeddings(doc_record.file_path)
             
             # Calculate vector IDs once
             vector_ids = [int((document_id * 10000) + idx) for idx in range(len(embeddings_data["chunks"]))]
@@ -191,6 +197,9 @@ def process_document_embeddings(
             chunks_with_ids = [
                 {
                     "text": chunk["text"],
+                    "page_number": chunk.get("page_number"),
+                    "char_start": chunk.get("char_start"),
+                    "char_end": chunk.get("char_end"),
                     "vector_id": vector_id
                 }
                 for chunk, vector_id in zip(embeddings_data["chunks"], vector_ids)
@@ -202,7 +211,10 @@ def process_document_embeddings(
                     "text": chunk["text"],
                     "embedding": chunk["embedding"],
                     "vector_id": vector_id,
-                    "chunk_index": idx
+                    "chunk_index": idx,
+                    "page_number": chunk.get("page_number"),
+                    "char_start": chunk.get("char_start"),
+                    "char_end": chunk.get("char_end")
                 }
                 for idx, (chunk, vector_id) in enumerate(zip(embeddings_data["chunks"], vector_ids))
             ]

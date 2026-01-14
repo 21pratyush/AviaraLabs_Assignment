@@ -1,5 +1,6 @@
 from typing import List, Dict, Optional
 import os
+import json
 from sqlalchemy.orm import Session
 from qdrant_client.models import PointIdsList, Filter, FieldCondition, MatchValue
 
@@ -85,6 +86,9 @@ def vector_search(
             chunk_text = result.payload.get("text")
             document_id = result.payload.get("document_id")
             chunk_index = result.payload.get("chunk_index")
+            page_number = result.payload.get("page_number")
+            char_start = result.payload.get("char_start")
+            char_end = result.payload.get("char_end")
             
             # Get document and chunk metadata from DB
             doc = db.query(Document).filter(Document.id == document_id).first()
@@ -100,7 +104,10 @@ def vector_search(
                 "chunk_id": chunk.id if chunk else None,
                 "document_id": document_id,
                 "document_filename": doc.filename if doc else None,
-                "chunk_index": chunk_index
+                "chunk_index": chunk_index,
+                "page_number": page_number,
+                "char_start": char_start,
+                "char_end": char_end
             })
         
         return {
@@ -158,15 +165,32 @@ def rag_query_stream(
             yield '{"status": "success", "query": "'+ query +'", "answer": "No relevant documents found for your query.", "retrieved_chunks": [], "sources": []}'
             return
         
-        # Prepare sources
-        sources = list(set([
-            result['document_filename'] 
-            for result in search_results["results"]
-        ]))
-        
-        # Stream metadata first
-        yield f'{{"status": "searching", "query": "{query}", "chunk_count": {len(search_results["results"])}, "sources": {sources}}}\n'
-        
+        # Prepare retrieved_chunks and sources
+        retrieved_chunks = []
+        for result in search_results["results"]:
+            retrieved_chunks.append({
+                "document_id": result.get("document_id"),
+                "filename": result.get("document_filename"),
+                "page_number": result.get("page_number"),
+                "char_start": result.get("char_start"),
+                "char_end": result.get("char_end"),
+                "chunk_index": result.get("chunk_index"),
+                "score": result.get("score")
+            })
+
+        sources = list({r["filename"] for r in retrieved_chunks if r.get("filename")})
+
+        # Stream metadata first (JSON-safe)
+        meta = {
+            "status": "searching",
+            "query": query,
+            "chunk_count": len(retrieved_chunks),
+            "sources": sources,
+            "retrieved_chunks": retrieved_chunks
+        }
+        # Emit as SSE-style data line for easier streaming clients
+        yield "data: " + json.dumps(meta) + "\n\n"
+
         # Load RAG prompt
         prompt_path = os.path.join(
             os.path.dirname(__file__),
@@ -175,21 +199,32 @@ def rag_query_stream(
         with open(prompt_path, "r") as f:
             system_prompt = f.read()
         
-        # Prepare context from retrieved chunks
-        context = "\n\n".join([
-            f"[Document: {result['document_filename']}]\n{result['chunk_text']}"
-            for result in search_results["results"]
-        ])
+        # Prepare context from retrieved chunks with explicit citation markers
+        context_pieces = []
+        for result in search_results["results"]:
+            doc_id = result.get("document_id")
+            fname = result.get("document_filename")
+            page = result.get("page_number")
+            start = result.get("char_start")
+            end = result.get("char_end")
+            snippet = result.get("chunk_text")
+            citation_tag = f"[DOC:{doc_id} FILE:{fname} PAGE:{page} CHAR:{start}-{end}]"
+            context_pieces.append(f"{citation_tag}\n{snippet}")
+
+        context = "\n\n".join(context_pieces)
         
         # Stream response from Gemini
         llm = get_gemini()
 
-        user_message = f"""{system_prompt} USER QUESTION: {query} RETRIEVED DOCUMENTS: {context} ANSWER:"""
+        # Instruct the LLM to ground its answer using the provided citations.
+        user_message = f"""{system_prompt}\n
+    USER QUESTION: {query}\n
+    RETRIEVED DOCUMENTS (each snippet preceded by a citation tag):\n{context}\n\nPlease answer the question using only the provided snippets and include citations (DOC/FILE/PAGE/CHAR ranges) where relevant. ANSWER:"""
         
         message = HumanMessage(content=user_message)
         
         # Stream the response
-        yield '{"status": "generating", "message": "Generating answer..."}\n'
+        yield 'data: ' + json.dumps({"status": "generating", "message": "Generating answer..."}) + "\n\n"
         
         # Use streaming with LLM
         full_answer = ""
@@ -199,10 +234,99 @@ def rag_query_stream(
                 full_answer += content
                 # Escape newlines and quotes for JSON
                 escaped_content = content.replace('"', '\\"').replace('\n', '\\n')
-                yield f'{{"type": "answer_chunk", "data": "{escaped_content}"}}\n'
+                yield "data: " + json.dumps({"type": "answer_chunk", "data": content}) + "\n\n"
         
-        # Send final response with all metadata
-        yield f'{{"status": "success", "query": "{query}", "chunk_count": {len(search_results["results"])}, "sources": {sources}, "complete": true}}\n'
+        # Send final response with the complete answer and structured citations
+        final_meta = {
+            "status": "success",
+            "query": query,
+            "answer": full_answer,
+            "chunk_count": len(retrieved_chunks),
+            "sources": sources,
+            "retrieved_chunks": retrieved_chunks,
+            "complete": True
+        }
+        yield "data: " + json.dumps(final_meta) + "\n\n"
         
     except Exception as e:
-        yield f'{{"status": "error", "error": "{str(e)}"}}\n'
+        yield "data: " + json.dumps({"status": "error", "error": str(e)}) + "\n\n"
+
+
+def rag_query(
+    query: str,
+    db: Session,
+    limit: int = 5,
+    score_threshold: float = 0.3,
+    document_ids: Optional[List[int]] = None
+):
+    """Non-streaming RAG query that returns a single JSON-able dict.
+
+    Use this when the client expects one parseable JSON response.
+    """
+    # Perform vector search
+    search_results = vector_search(
+        query=query,
+        db=db,
+        limit=limit,
+        score_threshold=score_threshold,
+        document_ids=document_ids,
+    )
+
+    if search_results["status"] != "success" or not search_results["results"]:
+        return {
+            "status": "success",
+            "query": query,
+            "answer": "No relevant documents found for your query.",
+            "retrieved_chunks": [],
+            "sources": []
+        }
+
+    # Build retrieved chunks and prompt context (same as stream)
+    retrieved_chunks = []
+    context_pieces = []
+    for result in search_results["results"]:
+        retrieved_chunks.append({
+            "document_id": result.get("document_id"),
+            "filename": result.get("document_filename"),
+            "page_number": result.get("page_number"),
+            "char_start": result.get("char_start"),
+            "char_end": result.get("char_end"),
+            "chunk_index": result.get("chunk_index"),
+            "score": result.get("score")
+        })
+
+        citation_tag = f"[DOC:{result.get('document_id')} FILE:{result.get('document_filename')} PAGE:{result.get('page_number')} CHAR:{result.get('char_start')}-{result.get('char_end')}]"
+        context_pieces.append(f"{citation_tag}\n{result.get('chunk_text')}")
+
+    system_prompt = ""
+    prompt_path = os.path.join(
+        os.path.dirname(__file__),
+        f"../prompts/rag_query_prompt_{version}.txt"
+    )
+    try:
+        with open(prompt_path, "r") as f:
+            system_prompt = f.read()
+    except Exception:
+        system_prompt = "Use the retrieved snippets to answer the user question."
+
+    context = "\n\n".join(context_pieces)
+    user_message = f"""{system_prompt}\n
+USER QUESTION: {query}\n
+RETRIEVED DOCUMENTS (each snippet preceded by a citation tag):\n{context}\n\nPlease answer the question using only the provided snippets and include citations (DOC/FILE/PAGE/CHAR ranges) where relevant. ANSWER:"""
+
+    llm = get_gemini()
+    message = HumanMessage(content=user_message)
+    response = llm.invoke([message])
+    response_text = response.content if hasattr(response, "content") else str(response)
+
+    sources = list({r["filename"] for r in retrieved_chunks if r.get("filename")})
+
+    return {
+        "status": "success",
+        "query": query,
+        "answer": response_text,
+        "chunk_count": len(retrieved_chunks),
+        "sources": sources,
+        "retrieved_chunks": retrieved_chunks,
+        "complete": True,
+    }

@@ -64,21 +64,23 @@ def save_document_chunks(
             chunk = DocumentChunk(
                 document_id=document_id,
                 chunk_text=chunk_data["text"],
-                page_number=0,  # Default value since we don't have page info
+                page_number=chunk_data.get("page_number", 0),
+                char_start=chunk_data.get("char_start"),
+                char_end=chunk_data.get("char_end"),
                 vector_id=str(chunk_data["vector_id"])
             )
             db.add(chunk)
-        
+
         # Commit all at once
         db.commit()
-        
+
         # Collect the IDs of newly added chunks
         new_chunks = db.query(DocumentChunk).filter(
             DocumentChunk.document_id == document_id
         ).order_by(DocumentChunk.id.desc()).limit(len(chunks_data)).all()
-        
+
         chunk_ids = [chunk.id for chunk in reversed(new_chunks)]
-        
+
     except Exception as e:
         db.rollback()
         raise Exception(f"Failed to save chunks: {str(e)}")

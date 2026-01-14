@@ -69,6 +69,7 @@ def scan_documents_for_risks(db: Session, document_ids: List[int]) -> Dict[int, 
             evidence = {
                 "chunk_id": chunk.id,
                 "vector_id": chunk.vector_id,
+                "page_number": chunk.page_number,
                 "text_snippet": text[m["start"]:m["end"]],
                 "char_start": m["start"],
                 "char_end": m["end"]
@@ -93,6 +94,7 @@ def scan_documents_for_risks(db: Session, document_ids: List[int]) -> Dict[int, 
                 "evidence": {
                     "chunk_id": chunk.id,
                     "vector_id": chunk.vector_id,
+                    "page_number": chunk.page_number,
                     "text_snippet": text[m["start"]:m["end"]],
                     "char_start": m["start"],
                     "char_end": m["end"]
@@ -118,6 +120,7 @@ def scan_documents_for_risks(db: Session, document_ids: List[int]) -> Dict[int, 
                 "evidence": {
                     "chunk_id": chunk.id,
                     "vector_id": chunk.vector_id,
+                    "page_number": chunk.page_number,
                     "text_snippet": text[m["start"]:m["end"]],
                     "char_start": m["start"],
                     "char_end": m["end"]
@@ -136,7 +139,7 @@ def scan_documents_for_risks(db: Session, document_ids: List[int]) -> Dict[int, 
                 clause_type=f["clause_type"],
                 severity=f["severity"],
                 description=f["description"],
-                evidence=str(f["evidence"])  # store as textified JSON
+                evidence=f["evidence"]
             )
             db.add(af)
     try:
