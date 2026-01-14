@@ -7,6 +7,7 @@ from app.db import models
 from app.db.vector_db import init_collection
 
 from app.api.ingest import router as ingest_router
+from app.api.retrieval import router as retrieval_router  
 
 app = FastAPI(
     title="Contract Intelligence API",
@@ -19,8 +20,9 @@ def startup():
     # Initialize Qdrant collection on startup
     init_collection()
     
-app.include_router(ingest_router)
-
 @app.get("/healthz", tags=["admin"])
 def health_check():
     return {"status": "ok"}
+
+app.include_router(ingest_router)
+app.include_router(retrieval_router) 
