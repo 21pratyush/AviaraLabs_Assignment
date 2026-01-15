@@ -11,3 +11,5 @@ sentence-transformers
 qdrant-client
 requests
 PyPDF2
+google-api-core
+tenacity
