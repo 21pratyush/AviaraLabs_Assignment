@@ -116,3 +116,21 @@ def save_extraction_result(
     db.commit()
     db.refresh(extraction)
     return extraction
+
+def get_document_by_id(db: Session, doc_id: int):
+    """Business logic to fetch document status."""
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        return None
+        
+    return {
+        "id": doc.id,
+        "filename": doc.filename,
+        "status": doc.status,
+        "processing_stage": doc.processing_stage,
+        "created_at": doc.created_at
+    }
+
+def get_extraction_by_doc_id(db: Session, doc_id: int):
+    """Business logic to fetch AI extraction data."""
+    return db.query(Extraction).filter(Extraction.document_id == doc_id).first()

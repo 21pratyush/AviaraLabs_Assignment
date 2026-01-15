@@ -4,7 +4,7 @@ from typing import List
 import logging
 
 from app.db.session import get_db
-from app.services.ingest_service import ingest_documents
+from app.services.ingest_service import ingest_documents, get_document_by_id, get_extraction_by_doc_id
 from app.services.pipeline_service import process_document_pipeline
 from app.services.webhook_service import schedule_webhook_job
 
@@ -62,3 +62,22 @@ def ingest(
     except Exception as e:
         logger.error(f"Ingest error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ingest failed: {str(e)}")
+
+@router.get("/{doc_id}")
+def get_document_status(doc_id: int, db: Session = Depends(get_db)):
+    # The API just asks the service for data
+    doc_data = get_document_by_id(db, doc_id)
+    
+    if not doc_data:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    return doc_data
+
+@router.get("/{doc_id}/extraction")
+def get_document_extraction(doc_id: int, db: Session = Depends(get_db)):
+    extraction = get_extraction_by_doc_id(db, doc_id)
+    
+    if not extraction:
+        raise HTTPException(status_code=404, detail="Extraction not ready or not found")
+    
+    return extraction
