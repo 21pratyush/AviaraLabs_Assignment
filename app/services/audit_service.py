@@ -1,150 +1,137 @@
 import re
+import json
+import logging
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
+from app.db.models import DocumentChunk, AuditFinding, Extraction
+from app.services.ai.llm import get_gemini
+from langchain_core.messages import HumanMessage
+from app.services.extraction_service import parse_json_garbage
 
-from app.db.models import DocumentChunk, AuditFinding
+logger = logging.getLogger(__name__)
 
-
-def _find_matches_in_chunk(patterns: List[re.Pattern], text: str) -> List[Dict[str, Any]]:
-    matches = []
-    for pat_name, pat in patterns:
-        for m in pat.finditer(text):
-            start, end = m.start(), m.end()
-            matches.append({
-                "pattern": pat_name,
-                "match_text": text[start:end],
-                "start": start,
-                "end": end
-            })
-    return matches
-
-
-def scan_documents_for_risks(db: Session, document_ids: List[int]) -> Dict[int, List[Dict]]:
+def scan_documents_for_risks(db: Session, document_ids: List[int], strategy: str = "regex") -> Dict[int, List[Dict]]:
     """
-    Scan provided documents (by document_id) for common risky clauses.
-
-    Returns a mapping document_id -> list of findings.
-    Each finding contains clause_type, severity, description, and evidence (chunk, offsets).
+    Main entry point for auditing. 
+    Supports 'regex' (Heuristic) and 'ai' (LLM-based) strategies.
     """
-    # Define heuristics as regex patterns
-    auto_renewal_patterns = [
-        ("auto_renewal", re.compile(r"auto[- ]?renew", re.I)),
-        ("renewal_notice_days", re.compile(r"notice.*?(\d{1,3})\s+day", re.I)),
-    ]
+    results = {}
+    for doc_id in document_ids:
+        try:
+            if strategy == "ai":
+                findings = run_ai_audit(db, doc_id)
+            else:
+                findings = run_regex_audit(db, doc_id)
+            
+            results[doc_id] = findings
+            persist_findings(db, doc_id, findings)
+        except Exception as e:
+            logger.error(f"Audit failed for doc {doc_id} using {strategy}: {str(e)}")
+            results[doc_id] = [{"error": str(e)}]
+            
+    return results
 
-    indemnity_patterns = [
-        ("indemnify", re.compile(r"indemnif[y|ication|ies]?|hold harmless", re.I)),
-    ]
-
-    liability_patterns = [
-        ("unlimited_liability", re.compile(r"unlimited\s+liabilit|no\s+liability\s+cap|no\s+cap\s+on\s+liability", re.I)),
-        ("liability_cap_absent", re.compile(r"liabilit(y|ies).*?cap|cap\s+on\s+liability", re.I)),
-    ]
-
-    findings_by_doc: Dict[int, List[Dict]] = {}
-
-    chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(document_ids)).all()
+def run_regex_audit(db: Session, doc_id: int) -> List[Dict]:
+    chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == doc_id).all()
+    findings = []
+    
+    # Broader patterns to catch variations found in your PDFs
+    patterns = {
+        "auto_renewal": re.compile(r"auto[- ]?renew|automatically\s+renews", re.I),
+        "short_notice": re.compile(r"notice.*?(\d{1,3})\s*days?", re.I),
+        # Catch both 'unlimited' AND 'not exceed' (to check small amounts)
+        "liability": re.compile(r"unlimited\s+liability|liability\s+shall\s+not\s+exceed", re.I),
+        "indemnity": re.compile(r"indemnify|hold\s+harmless|indemnity", re.I)
+    }
 
     for chunk in chunks:
-        doc_id = chunk.document_id
-        text = (chunk.chunk_text or "")
-        doc_findings = findings_by_doc.setdefault(doc_id, [])
+        text = chunk.chunk_text
+        
+        # 1. Auto-Renewal Check
+        if patterns["auto_renewal"].search(text):
+            notice_match = patterns["short_notice"].search(text)
+            # If notice is found, check if it's < 30. If not found, flag as a potential 'sneaky' renewal.
+            days = int(notice_match.group(1)) if notice_match else None
+            if days is not None and days < 30:
+                findings.append({
+                    "clause_type": "auto_renewal",
+                    "severity": "high",
+                    "description": f"Risky auto-renewal with short notice ({days} days).",
+                    "evidence": {"text": text[:200], "page": chunk.page_number}
+                })
 
-        # Auto-renewal checks
-        auto_matches = _find_matches_in_chunk(auto_renewal_patterns, text)
-        for m in auto_matches:
-            # If renewal_notice_days matched and days < 30 -> high severity
-            if m["pattern"] == "renewal_notice_days":
-                try:
-                    days = int(re.search(r"(\d{1,3})", m["match_text"]).group(1))
-                except Exception:
-                    days = None
+        # 2. Liability Check (Catching the $50 cap)
+        lib_match = patterns["liability"].search(text)
+        if lib_match:
+            # If it says 'not exceed', let's look for a small dollar amount nearby
+            amount_match = re.search(r"\$\s*(\d+)", text[lib_match.end():lib_match.end()+20])
+            is_low_cap = amount_match and int(amount_match.group(1)) < 100
+            
+            if "unlimited" in lib_match.group().lower() or is_low_cap:
+                findings.append({
+                    "clause_type": "liability",
+                    "severity": "critical",
+                    "description": f"Critical liability risk: {lib_match.group()}" + (f" (${amount_match.group(1)})" if is_low_cap else ""),
+                    "evidence": {"text": text[max(0, lib_match.start()-20):lib_match.end()+30], "page": chunk.page_number}
+                })
 
-                severity = "high" if days is not None and days < 30 else "medium"
-                description = f"Auto-renewal with notice period {days} days" if days else "Auto-renewal clause with notice requirement"
-            else:
-                severity = "medium"
-                description = "Auto-renewal clause detected"
-
-            evidence = {
-                "chunk_id": chunk.id,
-                "vector_id": chunk.vector_id,
-                "page_number": chunk.page_number,
-                "text_snippet": text[m["start"]:m["end"]],
-                "char_start": m["start"],
-                "char_end": m["end"]
-            }
-
-            finding = {
-                "clause_type": "auto_renewal",
-                "severity": severity,
-                "description": description,
-                "evidence": evidence,
-            }
-            doc_findings.append(finding)
-
-        # Indemnity checks
-        indemnity_matches = _find_matches_in_chunk(indemnity_patterns, text)
-        for m in indemnity_matches:
-            severity = "high" if re.search(r"to the fullest extent|without limit|including all", m["match_text"], re.I) else "medium"
-            finding = {
+        # 3. Indemnity Check
+        if patterns["indemnity"].search(text):
+            findings.append({
                 "clause_type": "indemnity",
-                "severity": severity,
-                "description": "Indemnity / hold harmless clause detected",
-                "evidence": {
-                    "chunk_id": chunk.id,
-                    "vector_id": chunk.vector_id,
-                    "page_number": chunk.page_number,
-                    "text_snippet": text[m["start"]:m["end"]],
-                    "char_start": m["start"],
-                    "char_end": m["end"]
-                }
-            }
-            doc_findings.append(finding)
+                "severity": "medium",
+                "description": "Indemnity clause detected. Requires manual review for breadth.",
+                "evidence": {"text": text[:200], "page": chunk.page_number}
+            })
 
-        # Liability checks
-        liability_matches = _find_matches_in_chunk(liability_patterns, text)
-        for m in liability_matches:
-            if m["pattern"] == "unlimited_liability":
-                severity = "high"
-                desc = "Unlimited or uncapped liability language detected"
-            else:
-                # If presence of 'cap' indicates some cap; ignore if cap present and numeric
-                severity = "medium"
-                desc = "Liability cap language detected"
+    return findings
 
-            finding = {
-                "clause_type": "liability",
-                "severity": severity,
-                "description": desc,
-                "evidence": {
-                    "chunk_id": chunk.id,
-                    "vector_id": chunk.vector_id,
-                    "page_number": chunk.page_number,
-                    "text_snippet": text[m["start"]:m["end"]],
-                    "char_start": m["start"],
-                    "char_end": m["end"]
-                }
-            }
-            doc_findings.append(finding)
+def run_ai_audit(db: Session, doc_id: int) -> List[Dict]:
+    """
+    AI-based audit using the pre-populated Extraction table.
+    """    
+    # Fetch structured data from Phase 2
+    extraction = db.query(Extraction).filter(Extraction.document_id == doc_id).first()
+    
+    if not extraction:
+        raise ValueError("Structured extraction data not found. Please run ingest/extract first.")
 
-    # Persist findings into DB and return structure
-    results: Dict[int, List[Dict]] = {}
-    for doc_id, findings in findings_by_doc.items():
-        results[doc_id] = findings
-        # Save into AuditFinding table
-        for f in findings:
-            af = AuditFinding(
-                document_id=doc_id,
-                clause_type=f["clause_type"],
-                severity=f["severity"],
-                description=f["description"],
-                evidence=f["evidence"]
-            )
-            db.add(af)
-    try:
-        db.commit()
-    except Exception:
-        db.rollback()
+    llm = get_gemini()
+    
+    
+    # Prompting the LLM to analyze the JSON structure for specific risks
+    audit_prompt = f"""
+    You are a senior legal auditor. Review the following structured contract data and identify risks.
+    
+    REQUIREMENTS:
+    1. Flag 'auto_renewal' as HIGH risk if notice is less than 30 days.
+    2. Flag 'liability_cap' as CRITICAL if it is 'unlimited' or extremely low (e.g., < $100).
+    3. Flag 'indemnity' as MEDIUM if it is 'broad'.
+    
+    DATA:
+    {json.dumps(extraction.extracted_json, indent=2)}
+    
+    RETURN ONLY a JSON list of objects:
+    [{{"clause_type": "string", "severity": "low|medium|high|critical", "description": "string", "evidence": "string"}}]
+    """
 
-    return results
+    response = llm.invoke([HumanMessage(content=audit_prompt)])
+    
+    return parse_json_garbage(response.content)
+
+def persist_findings(db: Session, doc_id: int, findings: List[Dict]):
+    """Saves findings to the audit_findings table."""
+    # Clear old findings for this doc to avoid duplicates during retries
+    db.query(AuditFinding).filter(AuditFinding.document_id == doc_id).delete()
+    
+    for f in findings:
+        if "error" in f: continue
+        finding = AuditFinding(
+            document_id=doc_id,
+            clause_type=f.get("clause_type", "unknown"),
+            severity=f.get("severity", "medium"),
+            description=f.get("description", ""),
+            evidence=f.get("evidence", {})
+        )
+        db.add(finding)
+    db.commit()

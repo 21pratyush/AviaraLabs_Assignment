@@ -1,8 +1,8 @@
 import os
 import json
-from typing import Dict, List
+from typing import Dict, List, Any
 from sqlalchemy.orm import Session
-
+import logging
 from docling.document_converter import DocumentConverter
 from langchain_core.messages import HumanMessage
 
@@ -12,16 +12,30 @@ from app.services.embedding_service import create_embeddings
 from app.services.qdrant_service import store_embeddings
 from app.services.ingest_service import save_document_chunks, save_extraction_result
 
+logger = logging.getLogger(__name__)
+
 version = "v1"
 
 ## util function to parse JSON from Gemini response
-def parse_json_garbage(text: str) -> dict:
-    """Helper to clean Gemini's markdown backticks and find JSON"""
+def parse_json_garbage(text: str) -> Any:
+    """
+    Improved helper to clean Gemini's markdown backticks and find JSON.
+    Supports both JSON Objects {} and JSON Lists [].
+    """
     import re, json
-    json_match = re.search(r'\{.*\}', text.strip(), re.DOTALL)
+    # Search for either [...] or {...}
+    # [ \t\r\n]* allows for leading whitespace inside the match
+    json_match = re.search(r'(\[.*\]|\{.*\})', text.strip(), re.DOTALL)
+    
     if json_match:
-        return json.loads(json_match.group())
-    raise json.JSONDecodeError("No JSON found", text, 0)
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError as e:
+            # Fallback: try to strip markdown code blocks manually if regex was too greedy
+            clean_text = text.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean_text)
+            
+    raise json.JSONDecodeError("No JSON found in LLM response", text, 0)
 
 ## Extraction Service Functions
 def extract_documents_raw_text(
@@ -72,20 +86,16 @@ def extract_documents_raw_text(
     return results
 
 def extract_contract_data(
+    extracted_text: str,
+    document_id: int,
     db: Session,
-    document_ids: List[int]
 ) -> Dict[int, Dict]:
     """
     Phase-2 Extraction (Gemini-based structured extraction)
-    
-    - Load PDFs from disk
-    - Extract raw text using Docling
     - Send to Gemini for structured extraction
     - Return extracted JSON data
     - No strict validation - proceed even if some fields are missing
     """
-    
-    raw_extractions = extract_documents_raw_text(db, document_ids)
     results: Dict[int, Dict] = {}
     llm = get_gemini()
     
@@ -96,57 +106,46 @@ def extract_contract_data(
     )
     with open(prompt_path, "r") as f:
         extraction_prompt = f.read()
-    
-    for document_id, data in raw_extractions.items():
-        # Check if Phase-1 failed
-        if "error" in data:
-            results[document_id] = data
-            continue
-        extracted_text = data["extracted_text"]
         
-        try:
-            message = HumanMessage(
-                content=f"{extraction_prompt}\n\nCONTRACT TEXT:\n{extracted_text}"
-            )
-            response = llm.invoke([message])
-            response_text = response.content if hasattr(response, 'content') else str(response)
-            
-            if not response_text or not response_text.strip():
-                results[document_id] = {
+    try:
+        message = HumanMessage(content=f"{extraction_prompt}\n\nCONTRACT TEXT:\n{extracted_text}")
+        response = llm.invoke([message])
+        response_text = response.content if hasattr(response, 'content') else str(response)
+
+        if not response_text or not response_text.strip():
+            results[document_id] = {
                     "error": "Empty response from Gemini",
                     "extracted_data": None
                 }
-                continue
             
-            extracted_json = parse_json_garbage(response_text)
+        extracted_json = parse_json_garbage(response_text)
             
-            results[document_id] = {
-                "filename": data["filename"],
-                "extracted_data": extracted_json,
-                "status": "success"
+        results[document_id] = {
+            "extracted_data": extracted_json,
+            "status": "success"
             }
             
             # Save to database
-            try:
-                save_extraction_result(
-                    db=db,
-                    document_id=document_id,
-                    extracted_json=extracted_json,
-                    model_used="gemini-2.5-flash"
-                )
-            except Exception as db_error:
-                results[document_id]["db_error"] = f"Failed to save to DB: {str(db_error)}"
+        try:
+            save_extraction_result(
+                db=db,
+                document_id=document_id,
+                extracted_json=extracted_json,
+                model_used="gemini-2.5-flash"
+            )
+        except Exception as db_error:
+            results[document_id]["db_error"] = f"Failed to save to DB: {str(db_error)}"
             
-        except json.JSONDecodeError as e:
-            results[document_id] = {
-                "error": f"JSON parsing failed: {str(e)}",
-                "extracted_data": None
-            }
-        except Exception as e:
-            results[document_id] = {
-                "error": f"Extraction failed: {str(e)}",
-                "extracted_data": None
-            }
+    except json.JSONDecodeError as e:
+        results[document_id] = {
+            "error": f"JSON parsing failed: {str(e)}",
+            "extracted_data": None
+        }
+    except Exception as e:
+        results[document_id] = {
+            "error": f"Extraction failed: {str(e)}",
+            "extracted_data": None
+        }
     
     return results
 
@@ -179,8 +178,12 @@ def process_document_embeddings(
                 continue
             
             extracted_text = data["extracted_text"]
+            try:
+                extract_contract_data(extracted_text, document_id, db)  # This populates your 'extractions' table (Signatures, Parties, etc.)
+            except Exception as e:
+                logger.error(f"Structured extraction failed for {document_id}: {e}")
+                
             filename = data["filename"]
-            
             # Create embeddings (page-aware) using the stored file path
             # Use the document file path from DB to preserve page info
             doc_record = db.query(Document).filter(Document.id == document_id).first()
