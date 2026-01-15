@@ -5,10 +5,9 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.audit_service import scan_documents_for_risks
 
-router = APIRouter(prefix="/audit", tags=["audit"])
+router = APIRouter(prefix="/analysis", tags=["Contract Analysis"])
 
-
-@router.post("")
+@router.post("/audit")
 def audit_documents(document_ids: List[int], db: Session = Depends(get_db)):
     """
     Scan provided documents for risky clauses and return findings with citations.

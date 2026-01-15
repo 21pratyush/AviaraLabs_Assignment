@@ -6,7 +6,7 @@ from app.db.vector_db import get_qdrant_client
 from app.db.models import Document, DocumentChunk, Extraction, AuditFinding
 from app.core.config import COLLECTION_NAME
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["System Admin"])
 
 @router.get("/healthz")
 def health_check(db: Session = Depends(get_db)):

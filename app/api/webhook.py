@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models import WebhookJob
 
-router = APIRouter(prefix="/webhook", tags=["webhook"])
+router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 
 @router.get("/jobs/{job_id}")
 def get_webhook_job(job_id: int, db: Session = Depends(get_db)):

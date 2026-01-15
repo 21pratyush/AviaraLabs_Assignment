@@ -8,10 +8,10 @@ from app.services.ingest_service import ingest_documents
 from app.services.pipeline_service import process_document_pipeline
 from app.services.webhook_service import schedule_webhook_job
 
-router = APIRouter(prefix="/ingest", tags=["ingest"])
+router = APIRouter(prefix="/documents", tags=["Documents"])
 logger = logging.getLogger(__name__)
 
-@router.post("")
+@router.post("/upload")
 def ingest(
     files: List[UploadFile] = File(...),
     callback_url: str | None = Form(None),

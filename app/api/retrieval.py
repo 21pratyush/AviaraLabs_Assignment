@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.retrieval_service import rag_query_stream, rag_query
 
-router = APIRouter(tags=["RAG"])
+router = APIRouter(tags=["RAG & Query"])
 
 @router.get("/ask/stream")
 def rag_search_query_stream(
