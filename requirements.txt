@@ -13,3 +13,5 @@ requests
 PyPDF2
 google-api-core
 tenacity
+pytest
+requests
