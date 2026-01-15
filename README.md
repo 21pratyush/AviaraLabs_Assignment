@@ -39,3 +39,5 @@ docker-compose up -d --build
 API Docs: http://0.0.0.0:8000/docs#/
 Qdrant Dashboard: http://localhost:6333/dashboard#/collections
 ```
+## ER Diagram
+![ER Diagram](image.png)
