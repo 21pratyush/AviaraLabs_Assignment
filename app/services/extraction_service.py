@@ -1,41 +1,21 @@
 import os
 import json
 from typing import Dict, List, Any
+from app.db.utils import log_error
 from sqlalchemy.orm import Session
 import logging
 from docling.document_converter import DocumentConverter
 from langchain_core.messages import HumanMessage
 
 from app.db.models import Document, Extraction, DocumentChunk
-from app.services.ai.llm import get_gemini
+from app.services.ai.llm import get_gemini, call_gemini_with_retry
 from app.services.embedding_service import create_embeddings
 from app.services.qdrant_service import store_embeddings
 from app.services.ingest_service import save_document_chunks, save_extraction_result
+from app.utils.parser import parse_json_garbage, smart_truncate
 
 logger = logging.getLogger(__name__)
-
 version = "v1"
-
-## util function to parse JSON from Gemini response
-def parse_json_garbage(text: str) -> Any:
-    """
-    Improved helper to clean Gemini's markdown backticks and find JSON.
-    Supports both JSON Objects {} and JSON Lists [].
-    """
-    import re, json
-    # Search for either [...] or {...}
-    # [ \t\r\n]* allows for leading whitespace inside the match
-    json_match = re.search(r'(\[.*\]|\{.*\})', text.strip(), re.DOTALL)
-    
-    if json_match:
-        try:
-            return json.loads(json_match.group())
-        except json.JSONDecodeError as e:
-            # Fallback: try to strip markdown code blocks manually if regex was too greedy
-            clean_text = text.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_text)
-            
-    raise json.JSONDecodeError("No JSON found in LLM response", text, 0)
 
 ## Extraction Service Functions
 def extract_documents_raw_text(
@@ -68,9 +48,21 @@ def extract_documents_raw_text(
             continue
 
         try:
+            # Check if text already exists to skip reprocessing
+            if doc.processing_stage in ["text_extracted", "ai_extracted", "indexed"]:
+                pass
+    
             conversion_result = converter.convert(doc.file_path)
             extracted_text = conversion_result.document.export_to_text()
+           
+            # STATUS UPDATE: Stage 1 Complete
+            doc.processing_stage = "text_extracted"
+            db.commit()
+        
         except Exception as e:
+            doc.status = "failed"
+            db.commit()
+            log_error(db, document_id, "document_processing", e)
             results[document_id] = {
                 "error": f"Docling extraction failed: {str(e)}"
             }
@@ -109,7 +101,9 @@ def extract_contract_data(
         
     try:
         message = HumanMessage(content=f"{extraction_prompt}\n\nCONTRACT TEXT:\n{extracted_text}")
-        response = llm.invoke([message])
+        
+        response = call_gemini_with_retry(llm, [message])
+        
         response_text = response.content if hasattr(response, 'content') else str(response)
 
         if not response_text or not response_text.strip():
@@ -142,10 +136,12 @@ def extract_contract_data(
             "extracted_data": None
         }
     except Exception as e:
+        log_error(db, document_id, "document_processing", e)
         results[document_id] = {
             "error": f"Extraction failed: {str(e)}",
             "extracted_data": None
         }
+        raise e
     
     return results
 
@@ -168,86 +164,93 @@ def process_document_embeddings(
     results: Dict[int, Dict] = {}
     
     for document_id, data in raw_extractions.items():
-        try:
-            # Check if Phase-1 failed
-            if "error" in data:
-                results[document_id] = {
-                    "error": data["error"],
-                    "vector_ids": None
-                }
-                continue
+        # Check if Phase-1 failed
+        if "error" in data:
+            results[document_id] = {
+                "error": data["error"],
+                "vector_ids": None
+            }
+            continue
+        doc = db.query(Document).filter(Document.id == document_id).first()
             
+        try:
             extracted_text = data["extracted_text"]
-            try:
-                extract_contract_data(extracted_text, document_id, db)  # This populates your 'extractions' table (Signatures, Parties, etc.)
-            except Exception as e:
-                logger.error(f"Structured extraction failed for {document_id}: {e}")
-                
+            
+            # Phase 2: Structured Data (AI)
+            if doc.processing_stage == "text_extracted":
+                try:
+                    optimized_text = smart_truncate(extracted_text)
+                    extract_contract_data(optimized_text, document_id, db)  # This populates your 'extractions' table (Signatures, Parties, etc.)
+                    
+                    doc.processing_stage = "ai_extracted"
+                    db.commit()
+                except Exception as e:
+                    doc.status = "failed"
+                    db.commit()
+                    logger.error(f"Structured extraction failed for {document_id}: {e}")
+                    continue # Skip to next document
+                    
             filename = data["filename"]
             # Create embeddings (page-aware) using the stored file path
-            # Use the document file path from DB to preserve page info
-            doc_record = db.query(Document).filter(Document.id == document_id).first()
-            if not doc_record or not doc_record.file_path:
+            if not doc or not doc.file_path:
                 results[document_id] = {"error": "Missing file for embeddings", "vector_ids": None}
                 continue
-
-            embeddings_data = create_embeddings(doc_record.file_path)
             
-            # Calculate vector IDs once
-            vector_ids = [int((document_id * 10000) + idx) for idx in range(len(embeddings_data["chunks"]))]
+            # Phase 3: Vector Store
+            if doc.processing_stage == "ai_extracted":
+                embeddings_data = create_embeddings(doc.file_path)
             
-            # Prepare chunk data with vector IDs for DB storage
-            chunks_with_ids = [
-                {
-                    "text": chunk["text"],
-                    "page_number": chunk.get("page_number"),
-                    "char_start": chunk.get("char_start"),
-                    "char_end": chunk.get("char_end"),
-                    "vector_id": vector_id
-                }
-                for chunk, vector_id in zip(embeddings_data["chunks"], vector_ids)
-            ]
+                # Calculate vector IDs once
+                vector_ids = [int((document_id * 10000) + idx) for idx in range(len(embeddings_data["chunks"]))]
             
-            # Prepare chunks with embeddings AND vector IDs for Qdrant storage
-            chunks_with_embeddings_and_ids = [
-                {
-                    "text": chunk["text"],
-                    "embedding": chunk["embedding"],
-                    "vector_id": vector_id,
-                    "chunk_index": idx,
-                    "page_number": chunk.get("page_number"),
-                    "char_start": chunk.get("char_start"),
-                    "char_end": chunk.get("char_end")
-                }
-                for idx, (chunk, vector_id) in enumerate(zip(embeddings_data["chunks"], vector_ids))
-            ]
+                # Prepare chunk data with vector IDs for DB storage
+                chunks_with_ids = [{**c, "vector_id": vid} for c, vid in zip(embeddings_data["chunks"], vector_ids)]
             
-            # FIRST: Save chunks to DB
-            try:
-                chunk_ids = save_document_chunks(
-                    db=db,
+                # Prepare chunks with embeddings AND vector IDs for Qdrant storage
+                chunks_with_embeddings_and_ids = [
+                    {
+                        "text": chunk["text"],
+                        "embedding": chunk["embedding"],
+                        "vector_id": vector_id,
+                        "chunk_index": idx,
+                        "page_number": chunk.get("page_number"),
+                        "char_start": chunk.get("char_start"),
+                        "char_end": chunk.get("char_end")
+                    }
+                    for idx, (chunk, vector_id) in enumerate(zip(embeddings_data["chunks"], vector_ids))
+                ]
+            
+                # FIRST: Save chunks to DB
+                try:
+                    chunk_ids = save_document_chunks(
+                        db=db,
+                        document_id=document_id,
+                        chunks_data=chunks_with_ids
+                    )
+                except Exception as db_error:
+                    results[document_id] = {
+                        "error": f"DB save failed: {str(db_error)}",
+                        "vector_ids": None
+                    }
+                    continue
+            
+                # SECOND: Store in Qdrant and get vector IDs
+                qdrant_result = store_embeddings(
                     document_id=document_id,
-                    chunks_data=chunks_with_ids
+                    chunks_with_embeddings=chunks_with_embeddings_and_ids
                 )
-            except Exception as db_error:
-                results[document_id] = {
-                    "error": f"DB save failed: {str(db_error)}",
-                    "vector_ids": None
-                }
-                continue
-            
-            # SECOND: Store in Qdrant and get vector IDs
-            qdrant_result = store_embeddings(
-                document_id=document_id,
-                chunks_with_embeddings=chunks_with_embeddings_and_ids
-            )
-            
-            if qdrant_result["status"] != "success":
-                results[document_id] = {
-                    "error": qdrant_result.get("error", "Qdrant storage failed"),
-                    "vector_ids": None
-                }
-                continue
+                
+                if qdrant_result["status"] != "success":
+                    results[document_id] = {
+                        "error": qdrant_result.get("error", "Qdrant storage failed"),
+                        "vector_ids": None
+                    }
+                    continue
+                
+                # FINAL STATUS UPDATE
+                doc.processing_stage = "indexed"
+                doc.status = "completed"
+                db.commit()
             
             results[document_id] = {
                 "filename": filename,
@@ -258,6 +261,9 @@ def process_document_embeddings(
             }
             
         except Exception as e:
+            doc.status = "failed"
+            db.commit()
+            log_error(db, document_id, "document_processing", e)
             results[document_id] = {
                 "error": f"Embedding creation failed: {str(e)}",
                 "vector_ids": None

@@ -7,7 +7,7 @@ from qdrant_client.models import PointIdsList, Filter, FieldCondition, MatchValu
 from app.services.embedding_service import get_embedding_model
 from app.db.vector_db import get_qdrant_client
 from app.core.config import COLLECTION_NAME
-from app.services.ai.llm import get_gemini
+from app.services.ai.llm import get_gemini, call_gemini_with_retry
 from app.db.models import DocumentChunk, Document
 from langchain_core.messages import HumanMessage
 
@@ -316,7 +316,7 @@ RETRIEVED DOCUMENTS (each snippet preceded by a citation tag):\n{context}\n\nPle
 
     llm = get_gemini()
     message = HumanMessage(content=user_message)
-    response = llm.invoke([message])
+    response = call_gemini_with_retry(llm, [message])
     response_text = response.content if hasattr(response, "content") else str(response)
 
     sources = list({r["filename"] for r in retrieved_chunks if r.get("filename")})

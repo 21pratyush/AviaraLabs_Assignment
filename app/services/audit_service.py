@@ -4,9 +4,9 @@ import logging
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from app.db.models import DocumentChunk, AuditFinding, Extraction
-from app.services.ai.llm import get_gemini
+from app.services.ai.llm import get_gemini, call_gemini_with_retry
 from langchain_core.messages import HumanMessage
-from app.services.extraction_service import parse_json_garbage
+from app.utils.parser import parse_json_garbage
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +114,7 @@ def run_ai_audit(db: Session, doc_id: int) -> List[Dict]:
     RETURN ONLY a JSON list of objects:
     [{{"clause_type": "string", "severity": "low|medium|high|critical", "description": "string", "evidence": "string"}}]
     """
-
-    response = llm.invoke([HumanMessage(content=audit_prompt)])
+    response = call_gemini_with_retry(llm, [HumanMessage(content=audit_prompt)])
     
     return parse_json_garbage(response.content)
 

@@ -2,11 +2,12 @@ import logging
 from datetime import datetime
 from typing import List
 
+from app.db.utils import log_error
 from sqlalchemy.orm import Session
 
 from app.services.extraction_service import process_document_embeddings
 from app.services.webhook_service import emit_webhook, process_webhook_job
-from app.db.models import WebhookJob
+from app.db.models import WebhookJob, Document
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,9 @@ def process_document_pipeline(db: Session, document_ids: List[int], callback_url
     """
     try:
         logger.info(f"Pipeline start for documents: {document_ids}")
-
+        db.query(Document).filter(Document.id.in_(document_ids)).update({"status": "processing"})
+        db.commit()
+        
         # Run embeddings creation (this function internally extracts text)
         result = process_document_embeddings(db, document_ids)
         logger.info("Embeddings pipeline completed")
@@ -48,12 +51,14 @@ def process_document_pipeline(db: Session, document_ids: List[int], callback_url
 
                 try:
                     process_webhook_job(db, webhook_job_id)
-                except Exception:
+                except Exception as e:
+                    log_error(db, webhook_job_id, "webhook_processing", e)
                     logger.exception("Failed to process webhook job")
             else:
                 try:
                     emit_webhook(callback_url, payload)
-                except Exception:
+                except Exception as e:
+                    log_error(db, webhook_job_id, "webhook_processing", e)
                     logger.exception("One-shot webhook emit failed")
 
         return {"status": "ok"}

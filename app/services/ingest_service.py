@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy.orm import Session
 from typing import List,Dict
 from app.db.models import Document, Extraction, DocumentChunk
+from app.db.utils import log_error
 from app.core.config import UPLOAD_DIR
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -83,6 +84,7 @@ def save_document_chunks(
 
     except Exception as e:
         db.rollback()
+        log_error(db, document_id, "document_processing", e)
         raise Exception(f"Failed to save chunks: {str(e)}")
     
     return chunk_ids
