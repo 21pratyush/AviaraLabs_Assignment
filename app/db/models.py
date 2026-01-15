@@ -18,6 +18,8 @@ class Document(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
     content_type: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(50), default="uploaded")       # uploaded, processing, completed, failed
+    processing_stage: Mapped[str] = mapped_column(String(50), default="none") # text_extracted, ai_extracted, vectorized, indexed
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow
     )
@@ -95,5 +97,21 @@ class WebhookJob(Base):
         DateTime, default=datetime.utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
+    )
+
+class ErrorLog(Base):
+    __tablename__ = "error_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    
+    entity_id: Mapped[int] = mapped_column(Integer)     # document_id or webhook_job_id
+    job_type: Mapped[str] = mapped_column(String(50))   # "document_processing" or "webhook_delivery"
+    
+    # Error Metadata
+    error_message: Mapped[str] = mapped_column(Text)
+    stack_trace: Mapped[str] = mapped_column(Text, nullable=True)
+    
+    created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow
     )
