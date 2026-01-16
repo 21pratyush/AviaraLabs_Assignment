@@ -33,6 +33,15 @@ DATABASE_URL=sqlite:///./contracts.db
 ```bash
 docker-compose up -d --build
 ```
+### 4. Testing & Validation
+#### A. Execute pytest within the running 'api' container
+```bash
+docker-compose exec api pytest tests/test_contract_intel_pipeline.py -v
+```
+#### B. Execute the interactive simulation script
+```bash
+docker-compose exec api python tests/simulate_test.py
+```
 
 ## 🛠 Service Dashboard
 ```bash
