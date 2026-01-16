@@ -15,7 +15,8 @@ import requests
 from requests.exceptions import RequestException
 
 API = "http://localhost:8000/api/v1"
-SAMPLES = list(Path(".").glob("*.pdf"))
+script_dir = Path(__file__).parent
+SAMPLES = list(script_dir.glob("*.pdf"))
 assert SAMPLES, "Put at least two PDFs in the current dir for testing"
 
 

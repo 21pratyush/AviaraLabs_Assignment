@@ -50,6 +50,9 @@ COPY --from=builder /app/.venv /app/.venv
 # Copy your application code
 COPY app ./app
 
+# Copy tests folder into the container
+COPY tests ./tests
+
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

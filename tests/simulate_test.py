@@ -74,7 +74,8 @@ class CLIReviewer:
 # Configuration
 BASE_URL = "http://localhost:8000/api/v1"
 WEBHOOK_URL = "https://webhook.site/61a7cac7-c723-4eff-8306-1a69e0656285"  ## Replace with your webhook URL
-DOCS = list(Path(".").glob("*.pdf"))
+script_dir = Path(__file__).parent
+DOCS = list(script_dir.glob("*.pdf"))
 
 def run_simulation():
     rev = CLIReviewer()

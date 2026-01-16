@@ -25,6 +25,7 @@ services:
     volumes:
       - ./app:/app/app:delegated
       - ./data/uploads:/data/uploads:delegated
+      - ./tests:/app/tests:delegated
     depends_on:
       - qdrant
 
